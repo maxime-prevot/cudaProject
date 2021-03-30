@@ -3,6 +3,8 @@ A Python implementation of the Viola-Jones ensemble classification method descri
 Viola, Paul, and Michael Jones. "Rapid object detection using a boosted cascade of simple features." Computer Vision and Pattern Recognition, 2001. CVPR 2001. Proceedings of the 2001 IEEE Computer Society Conference on. Vol. 1. IEEE, 2001.
 Works in both Python2 and Python3
 """
+from numba import cuda
+import numba as nb
 import numpy as np
 import math
 import pickle
@@ -276,7 +278,8 @@ class RectangleRegion:
         return "(x= %d, y= %d, width= %d, height= %d)" % (self.x, self.y, self.width, self.height)
     def __repr__(self):
         return "RectangleRegion(%d, %d, %d, %d)" % (self.x, self.y, self.width, self.height)
-        
+
+@cuda.jit      
 def integral_image(image):
     """
     Computes the integral image representation of a picture. The integral image is defined as following:
@@ -294,3 +297,5 @@ def integral_image(image):
             s[y][x] = s[y-1][x] + image[y][x] if y-1 >= 0 else image[y][x]
             ii[y][x] = ii[y][x-1]+s[y][x] if x-1 >= 0 else s[y][x]
     return ii
+
+
