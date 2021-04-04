@@ -3,12 +3,15 @@ import pickle
 from viola_jones import ViolaJones
 from cascade import CascadeClassifier
 import time
+from numba import cuda
+import numba as nb
 
+@cuda.jit
 def train_viola(t):
     with open("training.pkl", 'rb') as f:
         training = pickle.load(f)
     clf = ViolaJones(T=t)
-    clf.train(training, 2429, 4548)
+    clf.train(training, 2429, 4548, 20)
     evaluate(clf, training)
     clf.save(str(t))
 
@@ -62,3 +65,7 @@ def evaluate(clf, data):
     print("False Negative Rate: %d/%d (%f)" % (false_negatives, all_positives, false_negatives/all_positives))
     print("Accuracy: %d/%d (%f)" % (correct, len(data), correct/len(data)))
     print("Average Classification Time: %f" % (classification_time / len(data)))
+
+
+
+train_viola[1,16](10)

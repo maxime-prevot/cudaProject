@@ -20,7 +20,7 @@ class ViolaJones:
         self.alphas = []
         self.clfs = []
 
-    def train(self, training, pos_num, neg_num):
+    def train(self, training, pos_num, neg_num, nbImage):
         """
         Trains the Viola Jones classifier on a set of images (numpy arrays of shape (m, n))
           Args:
@@ -28,10 +28,13 @@ class ViolaJones:
             pos_num: the number of positive samples
             neg_num: the number of negative samples
         """
-        weights = np.zeros(len(training))
+        if nbImage > len(training):
+            nb = len(training)
+        else : nb = nbImage
+        weights = np.zeros(nb)
         training_data = []
         print("Computing integral images")
-        for x in range(len(training)):
+        for x in range(nb):
             training_data.append((integral_image(training[x][0]), training[x][1]))
             if training[x][1] == 1:
                 weights[x] = 1.0 / (2 * pos_num)
@@ -279,17 +282,121 @@ class RectangleRegion:
     def __repr__(self):
         return "RectangleRegion(%d, %d, %d, %d)" % (self.x, self.y, self.width, self.height)
 
-@cuda.jit      
+
+@cuda.jit(device=True)
+def index(index):
+    #pour ma cg : GTX 1050 2GB
+    nb_banks = 16
+    nb_core = 640
+    index_div = index // nb_banks
+    index_mod = index % nb_banks
+    offset_index = ((nb_core * index_mod) + index_div)
+    return offset_index
+    
+@cuda.jit
+def prescan(input, output, n):
+    
+    ## alloue mémoire partagée
+    temp = cuda.shared.array(12288, dtype=float32)
+    tdx = cuda.threadIdx.x
+    threadblocks = cuda.blockIdx.x*cuda.blockDim.x
+    offset = 1
+
+    ai = tdx
+    bi = tdx + (n//2)
+
+    ## on crée des shifted index afin d'éviter les banks conflicts
+    shifted_ai = index(ai)
+    shifted_bi = index(bi)
+
+     ##on charge l'input dans la mémoire partagée
+    temp[shifted_ai] = input[ai + threadblocks]
+    temp[shifted_bi] = input[bi + threadblocks]
+
+    #phase montante
+    d = n//2
+    while d > 0:
+        cuda.syncthreads()
+        if tdx < d:
+            ai = offset*(2*tdx+1)-1
+            bi = offset*(2*tdx+2)-1
+            shifted_ai = index(ai)
+            shifted_bi = index(bi)
+            temp[shifted_bi] += temp[shifted_ai]
+        offset *= 2
+        #on shift d sur la droite
+        d >>= 1
+    cuda.syncthreads()
+
+    ## on clear le dernier element
+    if tdx == 0:
+         temp[index(n-1)] = 0
+    
+    
+    #phase descendante 
+    d = 1
+    while d < n:
+        offset >>=1
+        cuda.syncthreads()
+
+        if tdx < d:
+            ai = offset*(2*tdx+1)-1
+            bi = offset*(2*tdx+2)-1
+            shifted_ai = index(ai)
+            shifted_bi = index(bi)
+            t = temp[shifted_ai]
+            temp[shifted_ai] = temp[shifted_bi]
+            temp[shifted_bi] += t
+
+        d *=2
+    cuda.syncthreads()
+
+
+    #on écrit les resultats sur la mémoire
+    output[ai + threadblocks] = temp[shifted_ai]
+    output[bi + threadblocks] = temp[shifted_bi]
+
+    cuda.syncthreads()
+    
+@cuda.jit
+def transpose(input, output, width, height):
+    TPB = 16
+    temp = cuda.shared.array(shape=(TPB, TPB+1), dtype=float32)
+
+    xIndex = cuda.blockIdx.x*TPB + cuda.threadIdx.x
+    yIndex = cuda.blockIdx.y*TPB + cuda.threadIdx.y
+
+    if xIndex < width and yIndex < height:
+        id_input = yIndex * width + xIndex
+        temp[cuda.threadIdx.y][cuda.threadIdx.x] = input[id_input]
+
+    cuda.syncthreads()
+
+    xIndex = cuda.blockIdx.x*TPB + cuda.threadIdx.x
+    yIndex = cuda.blockIdx.y*TPB + cuda.threadIdx.y
+    if xIndex * height and yIndex * width:
+        id_output = yIndex * height + xIndex
+        output[id_output] = temp[cuda.threadIdx.x][cuda.threadIdx.y]
+
+
+
+@cuda.jit
 def integral_image(image):
-    """
-    Computes the integral image representation of a picture. The integral image is defined as following:
-    1. s(x, y) = s(x, y-1) + i(x, y), s(x, -1) = 0
-    2. ii(x, y) = ii(x-1, y) + s(x, y), ii(-1, y) = 0
-    Where s(x, y) is a cumulative row-sum, ii(x, y) is the integral image, and i(x, y) is the original image.
-    The integral image is the sum of all pixels above and left of the current pixel
-      Args:
-        image : an numpy array with shape (m, n)
-    """
+    input = image
+    output = np.zeros(image.shape)
+    n = len(image)
+    prescan(input,output,n)
+    output_transpose = np.zeros(image.shape)
+    transpose(output,output_transpose,np.size(image,0),np.size(image,1))
+    output = np.zeros(image.shape)
+    prescan(output_transpose,output,len(output_transpose))
+    return output
+
+
+
+""" @cuda.jit      
+def integral_image(image):
+   
     ii = np.zeros(image.shape)
     s = np.zeros(image.shape)
     for y in range(len(image)):
@@ -297,5 +404,5 @@ def integral_image(image):
             s[y][x] = s[y-1][x] + image[y][x] if y-1 >= 0 else image[y][x]
             ii[y][x] = ii[y][x-1]+s[y][x] if x-1 >= 0 else s[y][x]
     return ii
-
+ """
 

@@ -1,5 +1,11 @@
 from viola_jones import ViolaJones
 import time
+from numba import cuda
+import numba as nb
+import numpy as np
+import math
+from viola_jones import ViolaJones
+import pickle
 
 def bench_train(nbImage):
     start = time.time()
@@ -10,8 +16,9 @@ def bench_train(nbImage):
 def bench_accuracy():
     pass
 
+
 ## Pour éviter les banks conflicts
-@cuda.jit(device=True)
+@cuda.jit
 def index(index):
     #pour ma cg : GTX 1050 2GB
     nb_banks = 16
@@ -21,11 +28,11 @@ def index(index):
     offset_index = ((nb_core * index_mod) + index_div)
     return offset_index
 
-@cuda.jit
+@nb.njit
 def prescan(input, output, n):
     
     ## alloue mémoire partagée
-    temp = cuda.shared.array(12288, dtype=float32)
+    temp = cuda.shared.array(12288, dtype=nb.types.float64)
     tdx = cuda.threadIdx.x
     threadblocks = cuda.blockIdx.x*cuda.blockDim.x
     offset = 1
@@ -86,14 +93,41 @@ def prescan(input, output, n):
 
     cuda.syncthreads()
     
-
+@nb.njit
 def transpose(input, output, width, height):
     TPB = 16
-    temp = cuda.shared.array(shape=(TPB, TPB+1), dtype=float32)
+    temp = cuda.shared.array(shape=(TPB, TPB+1), dtype=nb.types.float64)
 
     xIndex = cuda.blockIdx.x*TPB + cuda.threadIdx.x
     yIndex = cuda.blockIdx.y*TPB + cuda.threadIdx.y
 
     if xIndex < width and yIndex < height:
+        id_input = yIndex * width + xIndex
+        temp[cuda.threadIdx.y][cuda.threadIdx.x] = input[id_input]
 
-        
+    cuda.syncthreads()
+
+    xIndex = cuda.blockIdx.x*TPB + cuda.threadIdx.x
+    yIndex = cuda.blockIdx.y*TPB + cuda.threadIdx.y
+    if xIndex * height and yIndex * width:
+        id_output = yIndex * height + xIndex
+        output[id_output] = temp[cuda.threadIdx.x][cuda.threadIdx.y]
+
+
+@cuda.jit
+def integral_image(image, output, output_transpose,output_final):
+    input = image
+    n = len(image)
+    prescan(input,output,n)
+    transpose(output,output_transpose,np.size(image,0),np.size(image,1))
+    prescan(output_transpose,output_final,len(output_transpose))
+    return output
+    
+## essai de calcul d'image integrale ...
+with open("training.pkl", 'rb') as f:
+    training = pickle.load(f)
+    output = np.zeros(training[0][0].shape)
+    output_transpose = np.zeros(training[0][0].shape)
+    output_final = np.zeros(training[0][0].shape)
+    integral_image[16,16](training[0][0],output,output_transpose,output_final)
+
